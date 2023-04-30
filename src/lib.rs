@@ -2,7 +2,67 @@ use image::{ImageBuffer, Rgb};
 use pyo3::prelude::*;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
-use stl_io::Vector;
+use stl_io::{IndexedMesh, Vector};
+
+fn paint_plane(i: usize, z: f32, current_face_indices: HashSet<usize>, stl: &IndexedMesh, volume: &mut Vec<Vec<Vec<i32>>>) {
+    println!("z: {}, i: {}, len: {}", z, i, current_face_indices.len());
+    let mut polyline: Vec<Vec<(f32, f32, f32)>> = Vec::new();
+    for idx in &current_face_indices {
+        let intersecting_points = get_intersecting_points(&stl, &idx, &z);
+        if intersecting_points.len() == 2 {
+            polyline.push(intersecting_points);
+        } else if intersecting_points.len() == 3 {
+            for i in 0..3 {
+                polyline.push(vec![
+                    intersecting_points[i],
+                    intersecting_points[(i + 1) % 3],
+                ]);
+            }
+        }
+    }
+    let line_events = generate_line_events(&polyline);
+    let mut j = 0;
+    let mut x = 0.0;
+    let mut current_line_indices: HashSet<usize> = HashSet::new();
+    while j < line_events.len() {
+        let (line_event_x, line_event_type, line_event_index) = &line_events[j];
+        if line_event_x > &x {
+            // paint y
+            let mut ys: Vec<(f32, i32)> = Vec::new();
+            for n in current_line_indices.iter() {
+                ys.push(generate_y(polyline[*n][0], polyline[*n][1], x));
+            }
+            ys.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let mut yi = 0;
+            let mut inside = 0;
+            for (target_y, inside_change) in ys {
+                // round target_y
+                let target_y_rounded = target_y.round() as usize;
+                if inside > 0 {
+                    for _y_idx in yi..target_y_rounded {
+                        volume[x.round() as usize][_y_idx][z.round() as usize] = 1;
+                    }
+                }
+                inside += inside_change;
+                yi = target_y_rounded;
+            }
+            assert!(inside == 0);
+            x += 1.0;
+        } else if line_event_x <= &x && line_event_type == "start" {
+            assert!(!current_line_indices.contains(line_event_index));
+            current_line_indices.insert(*line_event_index);
+            j += 1;
+        } else if line_event_x <= &x && line_event_type == "end" {
+            assert!(current_line_indices.contains(line_event_index));
+            current_line_indices.remove(line_event_index);
+            j += 1;
+        } else {
+            panic!("something went wrong");
+        }
+    }
+    // process line events to paint
+    // plane
+}
 
 fn find_index_of_vector_with_greatest_z_value(vectors: Vec<Vector<f32>>, z: &f32) -> usize {
     let mut max_z_value = f32::NEG_INFINITY;
@@ -203,63 +263,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
         // unpack event
         let (event_z, event_type, face_index) = &events[i];
         if event_z > &z {
-            println!("z: {}, i: {}, len: {}", z, i, current_face_indices.len());
-            let mut polyline: Vec<Vec<(f32, f32, f32)>> = Vec::new();
-            for idx in &current_face_indices {
-                let intersecting_points = get_intersecting_points(&stl, &idx, &z);
-                if intersecting_points.len() == 2 {
-                    polyline.push(intersecting_points);
-                } else if intersecting_points.len() == 3 {
-                    for i in 0..3 {
-                        polyline.push(vec![
-                            intersecting_points[i],
-                            intersecting_points[(i + 1) % 3],
-                        ]);
-                    }
-                }
-            }
-            let line_events = generate_line_events(&polyline);
-            let mut j = 0;
-            let mut x = 0.0;
-            let mut current_line_indices: HashSet<usize> = HashSet::new();
-            while j < line_events.len() {
-                let (line_event_x, line_event_type, line_event_index) = &line_events[j];
-                if line_event_x > &x {
-                    // paint y
-                    let mut ys: Vec<(f32, i32)> = Vec::new();
-                    for n in current_line_indices.iter() {
-                        ys.push(generate_y(polyline[*n][0], polyline[*n][1], x));
-                    }
-                    ys.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                    let mut yi = 0;
-                    let mut inside = 0;
-                    for (target_y, inside_change) in ys {
-                        // round target_y
-                        let target_y_rounded = target_y.round() as usize;
-                        if inside > 0 {
-                            for _y_idx in yi..target_y_rounded {
-                                volume[x.round() as usize][_y_idx][z.round() as usize] = 1;
-                            }
-                        }
-                        inside += inside_change;
-                        yi = target_y_rounded;
-                    }
-                    assert!(inside == 0);
-                    x += 1.0;
-                } else if line_event_x <= &x && line_event_type == "start" {
-                    assert!(!current_line_indices.contains(line_event_index));
-                    current_line_indices.insert(*line_event_index);
-                    j += 1;
-                } else if line_event_x <= &x && line_event_type == "end" {
-                    assert!(current_line_indices.contains(line_event_index));
-                    current_line_indices.remove(line_event_index);
-                    j += 1;
-                } else {
-                    panic!("something went wrong");
-                }
-            }
-            // process line events to paint
-            // plane
+            paint_plane(i, z, current_face_indices.clone(), &stl, &mut volume);
             save_img(&volume, z.round() as usize, mxi as usize, myi as usize);
             println!("saved image {}.png, {}, {}", z, mxi, myi);
             z += z_step;
