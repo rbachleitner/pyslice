@@ -1,8 +1,8 @@
+use image::{ImageBuffer, Rgb};
 use pyo3::prelude::*;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use stl_io::Vector;
-use image::{ImageBuffer, Rgb};
 
 /// Formats the sum of two numbers as string.
 #[pyfunction]
@@ -71,10 +71,15 @@ fn get_intersecting_points(
     return ret;
 }
 
-fn generate_events(stl: &stl_io::IndexedMesh) -> (Vec<(f32, String, usize)>, f32, f32, f32) {
+fn generate_events(
+    stl: &mut stl_io::IndexedMesh,
+) -> (Vec<(f32, String, usize)>, f32, f32, f32, f32, f32, f32) {
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     let mut max_z = f32::NEG_INFINITY;
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut min_z = f32::INFINITY;
     let mut events: Vec<(f32, String, usize)> = Vec::new();
     for (i, face) in stl.faces.iter().enumerate() {
         let mut empty_vector: Vec<f32> = Vec::new();
@@ -84,11 +89,20 @@ fn generate_events(stl: &stl_io::IndexedMesh) -> (Vec<(f32, String, usize)>, f32
             if actual_vertex[0] > max_x {
                 max_x = actual_vertex[0];
             }
+            if actual_vertex[0] < min_x {
+                min_x = actual_vertex[0];
+            }
             if actual_vertex[1] > max_y {
                 max_y = actual_vertex[1];
             }
+            if actual_vertex[1] < min_y {
+                min_y = actual_vertex[1];
+            }
             if actual_vertex[2] > max_z {
                 max_z = actual_vertex[2];
+            }
+            if actual_vertex[2] < min_z {
+                min_z = actual_vertex[2];
             }
         }
         let min_of_empy_vector = empty_vector
@@ -102,10 +116,22 @@ fn generate_events(stl: &stl_io::IndexedMesh) -> (Vec<(f32, String, usize)>, f32
         events.push((*min_of_empy_vector, "start".to_string(), i));
         events.push((*max_of_empy_vector, "end".to_string(), i));
     }
+    for i in 0..stl.vertices.len() {
+        // array of f32
+        let new_values = [
+            stl.vertices[i][0] - min_x,
+            stl.vertices[i][1] - min_y,
+            stl.vertices[i][2] - min_z,
+        ];
+        stl.vertices[i] = Vector::new(new_values);
+    }
+    for event in events.iter_mut() {
+        event.0 -= min_z;
+    }
     assert_eq!(events.len(), 2 * stl.faces.len());
     // sort events by z
     events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    return (events, max_x, max_y, max_z);
+    return (events, max_x, max_y, max_z, min_x, min_y, min_z);
 }
 
 fn generate_line_events(polyline: &Vec<Vec<(f32, f32, f32)>>) -> Vec<(f32, String, usize)> {
@@ -141,13 +167,12 @@ fn generate_y(p1: (f32, f32, f32), p2: (f32, f32, f32), x: f32) -> (f32, i32) {
     return (y, inside_change);
 }
 
-
 fn save_img(volume: &Vec<Vec<Vec<i32>>>, z: usize, width: usize, height: usize) {
     // create an ImageBuffer from the 2D array
     let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
         let xi = x as usize;
         let yi = y as usize;
-        let value = 255*volume[xi][yi][z] as u8;
+        let value = 255 * volume[xi][yi][z] as u8;
         Rgb([value, value, value])
     });
 
@@ -155,22 +180,22 @@ fn save_img(volume: &Vec<Vec<Vec<i32>>>, z: usize, width: usize, height: usize) 
     img.save(format!("{}.png", z)).unwrap();
 }
 
-
 #[pyfunction]
 fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
     println!("reading stl...");
     let mut file = OpenOptions::new().read(true).open(fname).unwrap();
-    let stl = stl_io::read_stl(&mut file).unwrap();
+    let mut stl = stl_io::read_stl(&mut file).unwrap();
     println!("generating events...");
-    let (events, mx, my, mz) = generate_events(&stl);
+    let (events, mx, my, mz, minx, miny, minz) = generate_events(&mut stl);
     // ceiling of mx, my, mz
-    let mxi = mx.ceil() as i32;
-    let myi = my.ceil() as i32;
-    let mzi = mz.ceil() as i32;
+    let mxi = (mx - minx).ceil() as i32;
+    let myi = (my - miny).ceil() as i32;
+    let mzi = (mz - minz).ceil() as i32;
     // print bounding box
     println!("bounding box: {} {} {}", mxi, myi, mzi);
     // array of size mxi x myi x mzi
-    let mut volume: Vec<Vec<Vec<i32>>> = vec![vec![vec![0; mzi as usize]; myi as usize]; mxi as usize];
+    let mut volume: Vec<Vec<Vec<i32>>> =
+        vec![vec![vec![0; mzi as usize]; myi as usize]; mxi as usize];
     println!("events length: {}", events.len());
     assert_eq!(events.len(), 2 * stl.faces.len());
     // print first 10 events to stdout
@@ -215,11 +240,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                     // paint y
                     let mut ys: Vec<(f32, i32)> = Vec::new();
                     for n in current_line_indices.iter() {
-                        ys.push(generate_y(
-                            polyline[*n][0],
-                            polyline[*n][1],
-                            x,
-                        ));
+                        ys.push(generate_y(polyline[*n][0], polyline[*n][1], x));
                     }
                     ys.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                     let mut yi = 0;
@@ -241,7 +262,6 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                     assert!(!current_line_indices.contains(line_event_index));
                     current_line_indices.insert(*line_event_index);
                     j += 1;
-
                 } else if line_event_x <= &x && line_event_type == "end" {
                     assert!(current_line_indices.contains(line_event_index));
                     current_line_indices.remove(line_event_index);
