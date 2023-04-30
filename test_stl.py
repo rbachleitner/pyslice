@@ -1,3 +1,3 @@
 import pyslice
 
-pyslice.read_stl('Sphere.stl', 1)
+pyslice.read_stl('test.stl', 0.1)

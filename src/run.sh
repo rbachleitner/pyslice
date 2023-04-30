@@ -1,0 +1,1 @@
+maturin develop && time python test_stl.py test.stl

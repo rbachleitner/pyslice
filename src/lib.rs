@@ -1,14 +1,65 @@
 use image::{ImageBuffer, Rgb};
 use pyo3::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-use stl_io::{IndexedMesh, Vector};
+use stl_io::{IndexedTriangle, Vector};
+use std::sync::mpsc::channel;
+use threadpool::ThreadPool;
 
-fn paint_plane(i: usize, z: f32, current_face_indices: HashSet<usize>, stl: &IndexedMesh, volume: &mut Vec<Vec<Vec<i32>>>) {
-    println!("z: {}, i: {}, len: {}", z, i, current_face_indices.len());
+fn get_intersecting_points_2(
+    face: &IndexedTriangle,
+    verts: &HashMap<usize, Vector<f32>>,
+    z: &f32,
+) -> Vec<(f32, f32, f32)> {
+    let mut ret: Vec<(f32, f32, f32)> = Vec::new();
+    let vertices = vec![
+        verts[&face.vertices[0]],
+        verts[&face.vertices[1]],
+        verts[&face.vertices[2]],
+    ];
+    let max_z_index = find_index_of_vector_with_greatest_z_value(vertices, z);
+    let index_0 = max_z_index;
+    let index_1 = (max_z_index + 1) % 3;
+    let index_2 = (max_z_index + 2) % 3;
+    let edge_1 = (
+        verts[&face.vertices[index_0]],
+        verts[&face.vertices[index_1]],
+    );
+    let edge_2 = (
+        verts[&face.vertices[index_1]],
+        verts[&face.vertices[index_2]],
+    );
+    let edge_3 = (
+        verts[&face.vertices[index_2]],
+        verts[&face.vertices[index_0]],
+    );
+    let edges = vec![edge_1, edge_2, edge_3];
+    // corner case: edge_1.0[2] == edge_1.1[2]
+    // corner case: edge_1.0[2] == edge_1.1[2] == edge_2.1[2]
+    for edge in edges {
+        if edge.0[2] == *z {
+            ret.push((edge.0[0], edge.0[1], edge.0[2]));
+        } else if (edge.0[2] < *z && edge.1[2] > *z) || (edge.0[2] > *z && edge.1[2] < *z) {
+            let denom = edge.1[2] - edge.0[2];
+            let k = (z - edge.0[2]) / denom;
+            let _x = (edge.1[0] - edge.0[0]) * k + edge.0[0];
+            let _y = (edge.1[1] - edge.0[1]) * k + edge.0[1];
+            let _calculated_z = (edge.1[2] - edge.0[2]) * k + edge.0[2];
+            ret.push((_x, _y, _calculated_z));
+        }
+    }
+    return ret;
+}
+
+fn paint_plane(
+    z: f32,
+    subfaces: Vec<IndexedTriangle>,
+    subvertices: HashMap<usize, Vector<f32>>,
+    pixels: &mut Vec<Vec<i32>>
+) {
     let mut polyline: Vec<Vec<(f32, f32, f32)>> = Vec::new();
-    for idx in &current_face_indices {
-        let intersecting_points = get_intersecting_points(&stl, &idx, &z);
+    for face in subfaces {
+        let intersecting_points = get_intersecting_points_2(&face, &subvertices, &z);
         if intersecting_points.len() == 2 {
             polyline.push(intersecting_points);
         } else if intersecting_points.len() == 3 {
@@ -40,7 +91,7 @@ fn paint_plane(i: usize, z: f32, current_face_indices: HashSet<usize>, stl: &Ind
                 let target_y_rounded = target_y.round() as usize;
                 if inside > 0 {
                     for _y_idx in yi..target_y_rounded {
-                        volume[x.round() as usize][_y_idx][z.round() as usize] = 1;
+                        pixels[x.round() as usize][_y_idx]= 1;
                     }
                 }
                 inside += inside_change;
@@ -77,52 +128,6 @@ fn find_index_of_vector_with_greatest_z_value(vectors: Vec<Vector<f32>>, z: &f32
         return (max_z_value_index + 1) % 3;
     }
     max_z_value_index
-}
-
-fn get_intersecting_points(
-    stl: &stl_io::IndexedMesh,
-    idx: &usize,
-    z: &f32,
-) -> Vec<(f32, f32, f32)> {
-    let mut ret: Vec<(f32, f32, f32)> = Vec::new();
-    let _face = &stl.faces[*idx];
-    let vertices = vec![
-        stl.vertices[_face.vertices[0]],
-        stl.vertices[_face.vertices[1]],
-        stl.vertices[_face.vertices[2]],
-    ];
-    let max_z_index = find_index_of_vector_with_greatest_z_value(vertices, z);
-    let index_0 = max_z_index;
-    let index_1 = (max_z_index + 1) % 3;
-    let index_2 = (max_z_index + 2) % 3;
-    let edge_1 = (
-        stl.vertices[_face.vertices[index_0]],
-        stl.vertices[_face.vertices[index_1]],
-    );
-    let edge_2 = (
-        stl.vertices[_face.vertices[index_1]],
-        stl.vertices[_face.vertices[index_2]],
-    );
-    let edge_3 = (
-        stl.vertices[_face.vertices[index_2]],
-        stl.vertices[_face.vertices[index_0]],
-    );
-    let edges = vec![edge_1, edge_2, edge_3];
-    // corner case: edge_1.0[2] == edge_1.1[2]
-    // corner case: edge_1.0[2] == edge_1.1[2] == edge_2.1[2]
-    for edge in edges {
-        if edge.0[2] == *z {
-            ret.push((edge.0[0], edge.0[1], edge.0[2]));
-        } else if (edge.0[2] < *z && edge.1[2] > *z) || (edge.0[2] > *z && edge.1[2] < *z) {
-            let denom = edge.1[2] - edge.0[2];
-            let k = (z - edge.0[2]) / denom;
-            let _x = (edge.1[0] - edge.0[0]) * k + edge.0[0];
-            let _y = (edge.1[1] - edge.0[1]) * k + edge.0[1];
-            let _calculated_z = (edge.1[2] - edge.0[2]) * k + edge.0[2];
-            ret.push((_x, _y, _calculated_z));
-        }
-    }
-    return ret;
 }
 
 fn generate_events(
@@ -221,12 +226,12 @@ fn generate_y(p1: (f32, f32, f32), p2: (f32, f32, f32), x: f32) -> (f32, i32) {
     return (y, inside_change);
 }
 
-fn save_img(volume: &Vec<Vec<Vec<i32>>>, z: usize, width: usize, height: usize) {
+fn save_img(pixels: &Vec<Vec<i32>>, z: usize, width: usize, height: usize) {
     // create an ImageBuffer from the 2D array
     let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
         let xi = x as usize;
         let yi = y as usize;
-        let value = 255 * volume[xi][yi][z] as u8;
+        let value = 255 * pixels[xi][yi] as u8;
         Rgb([value, value, value])
     });
 
@@ -248,8 +253,6 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
     // print bounding box
     println!("bounding box: {} {} {}", mxi, myi, mzi);
     // array of size mxi x myi x mzi
-    let mut volume: Vec<Vec<Vec<i32>>> =
-        vec![vec![vec![0; mzi as usize]; myi as usize]; mxi as usize];
     println!("events length: {}", events.len());
     assert_eq!(events.len(), 2 * stl.faces.len());
     // print first 10 events to stdout
@@ -258,13 +261,33 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
     let mut i = 0;
     // init empty current face indices set
     let mut current_face_indices: HashSet<usize> = HashSet::new();
+    let pool = ThreadPool::new(8);
     // init 3d array of size 100x100x100
+    let (tx, rx) = channel();
+    let mut jobs: usize = 0;
     while i < events.len() {
         // unpack event
         let (event_z, event_type, face_index) = &events[i];
         if event_z > &z {
-            paint_plane(i, z, current_face_indices.clone(), &stl, &mut volume);
-            save_img(&volume, z.round() as usize, mxi as usize, myi as usize);
+            let subfaces: Vec<IndexedTriangle> = current_face_indices
+                .iter()
+                .map(|i| stl.faces[*i].clone())
+                .collect();
+            let mut subvertices: HashMap<usize, Vector<f32>> = HashMap::new();
+            for face in subfaces.iter() {
+                for vertex in face.vertices.iter() {
+                    subvertices.insert(*vertex, stl.vertices[*vertex].clone());
+                }
+            }
+            let tx = tx.clone();
+            jobs += 1;
+            let mut pixels: Vec<Vec<i32>> =
+                vec![vec![0; myi as usize]; mxi as usize];
+            pool.execute(move|| {
+                paint_plane(z, subfaces, subvertices, &mut pixels);
+                save_img(&pixels, z.round() as usize, mxi as usize, myi as usize);
+                tx.send(1).expect("channel will be waiting for the pool.")
+            });
             println!("saved image {}.png, {}, {}", z, mxi, myi);
             z += z_step;
         } else if event_z <= &z && event_type == "start" {
@@ -281,6 +304,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
             panic!("something went wrong");
         }
     }
+    rx.iter().take(jobs).for_each(|_| {});
     Ok(())
 }
 
