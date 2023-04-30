@@ -4,12 +4,6 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use stl_io::Vector;
 
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
-}
-
 fn find_index_of_vector_with_greatest_z_value(vectors: Vec<Vector<f32>>, z: &f32) -> usize {
     let mut max_z_value = f32::NEG_INFINITY;
     let mut max_z_value_index = 0;
@@ -209,11 +203,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
         // unpack event
         let (event_z, event_type, face_index) = &events[i];
         if event_z > &z {
-            // we processed all events for current z
-            // print current z, i and length of current face indices set
             println!("z: {}, i: {}, len: {}", z, i, current_face_indices.len());
-            // for all faces in the current set
-            // assemble polyline
             let mut polyline: Vec<Vec<(f32, f32, f32)>> = Vec::new();
             for idx in &current_face_indices {
                 let intersecting_points = get_intersecting_points(&stl, &idx, &z);
@@ -228,8 +218,6 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                     }
                 }
             }
-            // calculate plane by WindingQuery
-            // generate line events
             let line_events = generate_line_events(&polyline);
             let mut j = 0;
             let mut x = 0.0;
@@ -248,7 +236,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                     for (target_y, inside_change) in ys {
                         // round target_y
                         let target_y_rounded = target_y.round() as usize;
-                        if inside_change > 0 {
+                        if inside > 0 {
                             for _y_idx in yi..target_y_rounded {
                                 volume[x.round() as usize][_y_idx][z.round() as usize] = 1;
                             }
@@ -273,6 +261,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
             // process line events to paint
             // plane
             save_img(&volume, z.round() as usize, mxi as usize, myi as usize);
+            println!("saved image {}.png, {}, {}", z, mxi, myi);
             z += z_step;
         } else if event_z <= &z && event_type == "start" {
             // add face index to current face indices set
@@ -294,7 +283,6 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
 /// A Python module implemented in Rust.
 #[pymodule]
 fn pyslice(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     m.add_function(wrap_pyfunction!(read_stl, m)?)?;
     Ok(())
 }
