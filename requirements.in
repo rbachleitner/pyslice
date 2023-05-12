@@ -1,0 +1,2 @@
+maturin==0.14
+pip-tools

@@ -1,3 +1,4 @@
+import sys
 import pyslice
 
-pyslice.read_stl('test.stl', 0.1)
+pyslice.read_stl(sys.argv[1], float(sys.argv[2]))

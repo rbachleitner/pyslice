@@ -288,7 +288,7 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                 save_img(&pixels, z.round() as usize, mxi as usize, myi as usize);
                 tx.send(1).expect("channel will be waiting for the pool.")
             });
-            println!("saved image {}.png, {}, {}", z, mxi, myi);
+            println!("saved image {}.png, {}, {}", z.round(), mxi, myi);
             z += z_step;
         } else if event_z <= &z && event_type == "start" {
             // add face index to current face indices set
