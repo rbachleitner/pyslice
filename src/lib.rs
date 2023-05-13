@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use stl_io::{IndexedTriangle, Vector};
 use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
+pub mod boundingbox;
 
 fn get_intersecting_points_2(
     face: &IndexedTriangle,
@@ -132,37 +133,15 @@ fn find_index_of_vector_with_greatest_z_value(vectors: Vec<Vector<f32>>, z: &f32
 
 fn generate_events(
     stl: &mut stl_io::IndexedMesh,
-) -> (Vec<(f32, String, usize)>, f32, f32, f32, f32, f32, f32) {
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    let mut max_z = f32::NEG_INFINITY;
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut min_z = f32::INFINITY;
+) -> (Vec<(f32, String, usize)>, boundingbox::BoundingBox) {
     let mut events: Vec<(f32, String, usize)> = Vec::new();
+    let mut bb = boundingbox::BoundingBox::new();
     for (i, face) in stl.faces.iter().enumerate() {
         let mut empty_vector: Vec<f32> = Vec::new();
         for vertex in face.vertices {
             let actual_vertex = stl.vertices[vertex];
             empty_vector.push(actual_vertex[2]);
-            if actual_vertex[0] > max_x {
-                max_x = actual_vertex[0];
-            }
-            if actual_vertex[0] < min_x {
-                min_x = actual_vertex[0];
-            }
-            if actual_vertex[1] > max_y {
-                max_y = actual_vertex[1];
-            }
-            if actual_vertex[1] < min_y {
-                min_y = actual_vertex[1];
-            }
-            if actual_vertex[2] > max_z {
-                max_z = actual_vertex[2];
-            }
-            if actual_vertex[2] < min_z {
-                min_z = actual_vertex[2];
-            }
+            bb.update(&actual_vertex);
         }
         let min_of_empy_vector = empty_vector
             .iter()
@@ -178,19 +157,19 @@ fn generate_events(
     for i in 0..stl.vertices.len() {
         // array of f32
         let new_values = [
-            stl.vertices[i][0] - min_x,
-            stl.vertices[i][1] - min_y,
-            stl.vertices[i][2] - min_z,
+            stl.vertices[i][0] - bb.x.0,
+            stl.vertices[i][1] - bb.y.0,
+            stl.vertices[i][2] - bb.z.0,
         ];
         stl.vertices[i] = Vector::new(new_values);
     }
     for event in events.iter_mut() {
-        event.0 -= min_z;
+        event.0 -= bb.z.0;
     }
     assert_eq!(events.len(), 2 * stl.faces.len());
     // sort events by z
     events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    return (events, max_x, max_y, max_z, min_x, min_y, min_z);
+    return (events, bb);
 }
 
 fn generate_line_events(polyline: &Vec<Vec<(f32, f32, f32)>>) -> Vec<(f32, String, usize)> {
@@ -245,11 +224,11 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
     let mut file = OpenOptions::new().read(true).open(fname).unwrap();
     let mut stl = stl_io::read_stl(&mut file).unwrap();
     println!("generating events...");
-    let (events, mx, my, mz, minx, miny, minz) = generate_events(&mut stl);
+    let (events, bb) = generate_events(&mut stl);
     // ceiling of mx, my, mz
-    let mxi = (mx - minx).ceil() as i32;
-    let myi = (my - miny).ceil() as i32;
-    let mzi = (mz - minz).ceil() as i32;
+    let mxi = (bb.x.1 - bb.x.0).ceil() as i32;
+    let myi = (bb.y.1 - bb.y.0).ceil() as i32;
+    let mzi = (bb.z.1 - bb.z.0).ceil() as i32;
     // print bounding box
     println!("bounding box: {} {} {}", mxi, myi, mzi);
     // array of size mxi x myi x mzi
