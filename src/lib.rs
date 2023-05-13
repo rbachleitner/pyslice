@@ -3,7 +3,6 @@ use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use stl_io::{IndexedTriangle, Vector};
-use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
 pub mod boundingbox;
 
@@ -134,26 +133,30 @@ fn find_index_of_vector_with_greatest_z_value(vectors: Vec<Vector<f32>>, z: &f32
 fn generate_events(
     stl: &mut stl_io::IndexedMesh,
 ) -> (Vec<(f32, String, usize)>, boundingbox::BoundingBox) {
+    // we will build a vector
+    // minimum z start events and
+    // maximum z end events
+    // and their corresponding face indices
     let mut events: Vec<(f32, String, usize)> = Vec::new();
     let mut bb = boundingbox::BoundingBox::new();
-    for (i, face) in stl.faces.iter().enumerate() {
-        let mut empty_vector: Vec<f32> = Vec::new();
+    for (face_index, face) in stl.faces.iter().enumerate() {
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
         for vertex in face.vertices {
             let actual_vertex = stl.vertices[vertex];
-            empty_vector.push(actual_vertex[2]);
+            if actual_vertex[2] < min {
+                min = actual_vertex[2];
+            }
+            if actual_vertex[2] > min {
+                max = actual_vertex[2];
+            }
             bb.update(&actual_vertex);
         }
-        let min_of_empy_vector = empty_vector
-            .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-        let max_of_empy_vector = empty_vector
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-        events.push((*min_of_empy_vector, "start".to_string(), i));
-        events.push((*max_of_empy_vector, "end".to_string(), i));
+        events.push((min, "start".to_string(), face_index));
+        events.push((max, "end".to_string(), face_index));
     }
+    // we also move
+    // the vertices to the origin
     for i in 0..stl.vertices.len() {
         // array of f32
         let new_values = [
@@ -163,6 +166,7 @@ fn generate_events(
         ];
         stl.vertices[i] = Vector::new(new_values);
     }
+    // we have to move the events as well
     for event in events.iter_mut() {
         event.0 -= bb.z.0;
     }
@@ -233,20 +237,15 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
     println!("bounding box: {} {} {}", mxi, myi, mzi);
     // array of size mxi x myi x mzi
     println!("events length: {}", events.len());
-    assert_eq!(events.len(), 2 * stl.faces.len());
-    // print first 10 events to stdout
     // looop over events
     let mut z = 0.0;
-    let mut i = 0;
+    let mut event_index = 0;
     // init empty current face indices set
     let mut current_face_indices: HashSet<usize> = HashSet::new();
     let pool = ThreadPool::new(8);
-    // init 3d array of size 100x100x100
-    let (tx, rx) = channel();
-    let mut jobs: usize = 0;
-    while i < events.len() {
+    while event_index < events.len() {
         // unpack event
-        let (event_z, event_type, face_index) = &events[i];
+        let (event_z, event_type, face_index) = &events[event_index];
         if event_z > &z {
             let subfaces: Vec<IndexedTriangle> = current_face_indices
                 .iter()
@@ -258,14 +257,11 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
                     subvertices.insert(*vertex, stl.vertices[*vertex].clone());
                 }
             }
-            let tx = tx.clone();
-            jobs += 1;
             let mut pixels: Vec<Vec<i32>> =
                 vec![vec![0; myi as usize]; mxi as usize];
             pool.execute(move|| {
                 paint_plane(z, subfaces, subvertices, &mut pixels);
                 save_img(&pixels, z.round() as usize, mxi as usize, myi as usize);
-                tx.send(1).expect("channel will be waiting for the pool.")
             });
             println!("saved image {}.png, {}, {}", z.round(), mxi, myi);
             z += z_step;
@@ -273,17 +269,17 @@ fn read_stl(fname: String, z_step: f32) -> PyResult<()> {
             // add face index to current face indices set
             // and increment i
             current_face_indices.insert(*face_index);
-            i += 1;
+            event_index += 1;
         } else if event_z <= &z && event_type == "end" {
             // remove face index from current face indices set
             // and increment i
             current_face_indices.remove(face_index);
-            i += 1;
+            event_index += 1;
         } else {
             panic!("something went wrong");
         }
     }
-    rx.iter().take(jobs).for_each(|_| {});
+    pool.join();
     Ok(())
 }
 
